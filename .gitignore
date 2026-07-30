@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Tool output — usage logs can contain prefix hashes and cost figures
+*.jsonl
+logs/
+agentcost-report.json
+agentcost-findings.json
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

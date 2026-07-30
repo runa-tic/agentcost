@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcost"
+version = "0.1.0"
+description = "Cost observability for LLM agent code — catches prompt-cache failures that are silent by construction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["llm", "anthropic", "claude", "prompt-caching", "observability", "cost"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Quality Assurance",
+]
+# No runtime dependencies on purpose: this reads source and logs, and must be
+# safe to drop into CI without pulling a tree of packages.
+dependencies = []
+
+[project.scripts]
+agentcost = "agentcost.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/runa-tic/agentcost"
+Issues = "https://github.com/runa-tic/agentcost/issues"
+
+[tool.setuptools]
+packages = ["agentcost"]
