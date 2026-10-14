@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """agentcost — static cost analyzer for LLM agent codebases.
 
-Finds Anthropic `messages.create` call sites in TypeScript/JavaScript, works out
-which model each one uses and how its `system` blocks are laid out, then reports
+Finds Anthropic `messages.create` call sites in TypeScript/JavaScript (regex
+front end, below) and Python (`ast` front end, pyscan.py), works out which model
+each one uses and how its `system` blocks are laid out, then reports
 where prompt caching is silently not working.
 
 The failure this exists to catch: `cache_control` on a prefix shorter than the
@@ -99,8 +100,12 @@ VOLATILE_EXPR = re.compile(
     re.I,
 )
 
-SOURCE_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
-SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "coverage", ".claude"}
+SOURCE_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py")
+SKIP_DIRS = {
+    "node_modules", ".git", "dist", "build", ".next", "coverage", ".claude",
+    "__pycache__", ".venv", "venv", ".tox", "site-packages", ".mypy_cache", ".pytest_cache",
+}
+PROJECT_MARKERS = ("package.json", "pyproject.toml", "setup.py", "setup.cfg")
 
 
 def normalize_model(raw: str) -> str:
@@ -151,6 +156,10 @@ class CallSite:
     system_chars: int | None = None
     system_is_plain_string: bool = False
     has_cache_control: bool = False
+    # True when part of the prefix could not be sized (tools, the API's tool-use
+    # preamble, runtime interpolation): the measured size is a floor, not a value.
+    cached_is_lower_bound: bool = False
+    system_is_lower_bound: bool = False
 
     @property
     def cached_tokens(self) -> int | None:
@@ -171,13 +180,13 @@ class CallSite:
 
 
 def project_label(path: str) -> str:
-    """Name a scan root by its nearest package.json ancestor.
+    """Name a scan root by its nearest package.json / pyproject.toml ancestor.
 
-    Scanning `.../eren/src` should report as `eren`, not `src`.
+    Scanning `.../my-agent/src` should report as `my-agent`, not `src`.
     """
     cur = os.path.abspath(path)
     for _ in range(6):
-        if os.path.exists(os.path.join(cur, "package.json")):
+        if any(os.path.exists(os.path.join(cur, m)) for m in PROJECT_MARKERS):
             return os.path.basename(cur)
         parent = os.path.dirname(cur)
         if parent == cur:
@@ -299,7 +308,7 @@ def resolve_system_helper(
     idents: list[str] = []
 
     # Default parameter value is usually the cached prefix:
-    #   function systemBlocks(staticText: string = EREN_KB)
+    #   function systemBlocks(staticText: string = AGENT_KB)
     dm = re.search(r"=\s*([A-Za-z_]\w*)", params)
     if dm:
         idents.append(dm.group(1))
@@ -549,6 +558,19 @@ def analyze_site(s: CallSite, model: str | None) -> list[Finding]:
         if not (s.system_is_plain_string or s.n_system_blocks):
             return out
         tok = s.system_tokens
+        if minpfx and tok is not None and tok < minpfx and s.system_is_lower_bound:
+            out.append(
+                Finding(
+                    "info",
+                    "no-cache-breakpoint",
+                    s.file,
+                    s.line,
+                    f"No cache_control on a {model} call; system prompt is at least ~{tok:,} tok",
+                    "Part of the system prompt could not be sized, so whether a breakpoint "
+                    "would clear the model's minimum is unknown. Measure with count_tokens.",
+                )
+            )
+            return out
         # A breakpoint below the model minimum is inert, so telling someone to add
         # one on a small prompt is bad advice rather than a finding.
         if minpfx and tok is not None and tok < minpfx:
@@ -595,7 +617,24 @@ def analyze_site(s: CallSite, model: str | None) -> list[Finding]:
         return out
 
     tok = s.cached_tokens
-    if minpfx and tok < minpfx:
+    if minpfx and tok < minpfx and s.cached_is_lower_bound:
+        # A floor below the minimum proves nothing: the unsized part may clear it.
+        # Never fail CI on it.
+        out.append(
+            Finding(
+                "medium",
+                "possibly-dead-breakpoint",
+                s.file,
+                s.line,
+                f"Measured part of the cached prefix ~{tok:,} tok is below {model}'s "
+                f"{minpfx:,}-tok minimum",
+                "Some of the prefix could not be sized statically (tools, the API's "
+                "tool-use preamble, or runtime interpolation), so the real prefix may "
+                "still clear the minimum. Confirm with count_tokens or a usage log: "
+                "cache_creation_input_tokens stuck at 0 means the breakpoint is dead.",
+            )
+        )
+    elif minpfx and tok < minpfx:
         out.append(
             Finding(
                 "high",
@@ -751,6 +790,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--quiet", action="store_true", help="suppress info-level findings")
     args = ap.parse_args(argv)
 
+    try:
+        from .pyscan import scan_python_file
+    except ImportError:  # run as a loose script
+        from pyscan import scan_python_file  # type: ignore
+
     all_sites: list[CallSite] = []
     all_findings: list[Finding] = []
 
@@ -761,7 +805,8 @@ def main(argv: list[str] | None = None) -> int:
         root = p if os.path.isdir(p) else os.path.dirname(p) or "."
         label = project_label(root)
         for f in iter_source_files(p):
-            sites, findings = scan_file(f, root)
+            scanner = scan_python_file if f.endswith(".py") else scan_file
+            sites, findings = scanner(f, root)
             for s in sites:
                 s.file = f"{label}/{s.file}".replace("\\", "/")
             for fd in findings:

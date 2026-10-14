@@ -62,9 +62,9 @@ corpus this was built against.
 agentcost scan ./src ./services/worker/src --quiet
 ```
 
-Finds Anthropic `messages.create` call sites, resolves the model and system-block
-layout, estimates the cached prefix size, and compares it against that model's
-minimum:
+Finds Anthropic `messages.create` / `messages.stream` call sites in TypeScript,
+JavaScript and Python, resolves the model and system-block layout, estimates the
+cached prefix size, and compares it against that model's minimum:
 
 ```
 [HIGH] dead-breakpoint  —  src/scheduler.ts:735
@@ -72,6 +72,11 @@ minimum:
     The API will silently decline to cache this prefix — no error,
     cache_creation_input_tokens stays 0, and every call pays full input price.
 ```
+
+Python is read through the stdlib `ast` parser, so constants, `os.environ.get`
+defaults, `self.MODEL` class attributes, `**params` dict literals and local aliases
+(`api = getattr(client, "messages")`) resolve structurally. TypeScript and
+JavaScript go through a lighter regex front end.
 
 Read-only. Never imports or executes the code it scans. Exits 1 when any
 high-severity finding is present, so it drops into CI as a gate.
@@ -120,7 +125,14 @@ differ. A hash cannot.
   of a threshold is reported as `near-minimum` rather than asserted — confirm with
   the `count_tokens` endpoint.
 - **Anything about routes it cannot resolve statically.** Models set from runtime
-  config report as `unresolved` and are skipped rather than guessed at.
+  config report as `unresolved` and are skipped rather than guessed at. A request
+  assembled at runtime (`create(**kwargs)` from a dict built elsewhere) is reported
+  once as `runtime-built-request` — for those routes the usage log is the only
+  instrument.
+- **An exact prefix when tools are involved.** The API caches tools before system,
+  and adds a tool-use preamble no source file shows. A Python call with `tools=`
+  is therefore measured as a floor: a short floor is reported as
+  `possibly-dead-breakpoint` (medium), never as a CI-failing high.
 
 A static finding on a code path that never executes is noise, not a bug. Check
 findings against runtime traffic before acting on them.

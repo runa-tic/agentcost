@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentcost"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cost observability for LLM agent code — catches prompt-cache failures that are silent by construction"
 readme = "README.md"
 requires-python = ">=3.10"
